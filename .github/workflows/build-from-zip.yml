@@ -1,0 +1,122 @@
+name: Build from zip
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip project
+        run: |
+          unzip -q -o "$(ls *.zip | head -n1)" -x ".github/*"
+          test -f shared_app/pubspec.yaml
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate Android platform files
+        working-directory: shared_app
+        run: |
+          flutter create --platforms=android --org com.deviceagent --project-name shared_app .
+          rm -f android/settings.gradle.kts android/build.gradle.kts android/app/build.gradle.kts
+          rm -rf android/app/src/main/kotlin/com/example
+      - name: Build APK
+        working-directory: shared_app
+        env:
+          CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
+        run: |
+          flutter pub get
+          flutter build apk --release --dart-define=CONTROL_API_URL="$CONTROL_API_URL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Universal-Device-Agent-APK
+          path: shared_app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  windows:
+    name: Windows EXE
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip project
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Filter *.zip | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath . -Force
+          if (!(Test-Path 'shared_app/pubspec.yaml')) { throw 'shared_app/pubspec.yaml not found' }
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate missing managed Windows CMake files
+        shell: pwsh
+        run: |
+          $template = Join-Path $env:RUNNER_TEMP 'uda_windows_template'
+          if (Test-Path $template) { Remove-Item $template -Recurse -Force }
+          flutter create --platforms=windows --org com.deviceagent --project-name shared_app $template
+          $sourceFlutter = Join-Path $template 'windows/flutter'
+          $targetFlutter = 'shared_app/windows/flutter'
+          if (Test-Path $targetFlutter) { Remove-Item $targetFlutter -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path 'shared_app/windows' | Out-Null
+          Copy-Item $sourceFlutter $targetFlutter -Recurse -Force
+      - name: Build Windows release
+        working-directory: shared_app
+        shell: pwsh
+        env:
+          CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
+        run: |
+          flutter pub get
+          flutter build windows --release --dart-define=CONTROL_API_URL="$env:CONTROL_API_URL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Universal-Device-Agent-Windows
+          path: shared_app/build/windows/x64/runner/Release/
+          if-no-files-found: error
+
+  linux:
+    name: Linux (OS app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip project
+        run: |
+          unzip -q -o "$(ls *.zip | head -n1)" -x ".github/*"
+          test -f shared_app/pubspec.yaml
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libglib2.0-dev libpipewire-0.3-dev libx11-dev libxtst-dev libturbojpeg0-dev libebook1.2-dev dpkg
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate missing managed Linux CMake files
+        run: |
+          set -euo pipefail
+          template="$RUNNER_TEMP/uda_linux_template"
+          rm -rf "$template"
+          flutter create --platforms=linux --org com.deviceagent --project-name shared_app "$template"
+          rm -rf shared_app/linux/flutter
+          cp -a "$template/linux/flutter" shared_app/linux/flutter
+      - name: Build Linux release
+        working-directory: shared_app
+        env:
+          CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
+        run: |
+          flutter pub get
+          flutter build linux --release --dart-define=CONTROL_API_URL="$CONTROL_API_URL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Universal-Device-Agent-Linux
+          path: shared_app/build/linux/x64/release/bundle/
+          if-no-files-found: error
